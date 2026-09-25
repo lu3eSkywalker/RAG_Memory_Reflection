@@ -1,0 +1,58 @@
+{
+  "query": "def fibonacci_iterative(n):",
+  "retriever_id": "cosine_similarity",
+  "documents": [
+    {
+      "content": "            handle.remove()\n        self.outputs = {}\n\n        for extract_layer in layers_to_extract_from:\n            forward_hook = ForwardHook(\n                self.outputs, extract_layer, layers_to_extract_from[-1]\n            )\n            if \".\" in extract_layer:\n                extract_block, extract_idx = extract_layer.split(\".\")\n                network_layer = backbone.__dict__[\"_modules\"][extract_block]\n                if extract_idx.isnumeric():\n                    extract_idx = int(extract_idx)\n                    network_layer = network_layer[extract_idx]\n                else:\n                    network_layer = network_layer.__dict__[\"_modules\"][extract_idx]\n            else:\n                network_layer = backbone.__dict__[\"_modules\"][extract_layer]\n\n            if isinstance(network_layer, torch.nn.Sequential):\n                self.backbone.hook_handles.append(",
+      "metadata": {
+        "start_line": 230,
+        "end_line": 250,
+        "window_size": 20,
+        "slice_size": 2,
+        "repo": "embedding_and_chunking_result",
+        "file_path": "/home/sooraj/Downloads/embedding_and_chunking_result/code.py"
+      },
+      "score": 0.1204409971833229
+    },
+    {
+      "content": "    def _gpu_cloner_options(self):\n        cloner = faiss.GpuClonerOptions()\n        cloner.useFloat16 = True\n        return cloner\n\n    def _create_index(self, dimension):\n        index = faiss.IndexIVFPQ(\n            faiss.IndexFlatL2(dimension),\n            dimension,\n            512,  # n_centroids\n            64,  # sub-quantizers\n            8,\n        )  # nbits per code\n        return self._index_to_gpu(index)\n\n\nclass _BaseMerger:\n    def __init__(self):\n        \"\"\"Merges feature embedding by name.\"\"\"\n\n    def merge(self, features: list):\n        features = [self._reduce(feature) for feature in features]\n        return np.concatenate(features, axis=1)\n\n\nclass AverageMerger(_BaseMerger):\n    @staticmethod\n    def _reduce(features):\n        # NxCxWxH -> NxC\n        return features.reshape([features.shape[0], features.shape[1], -1]).mean(\n            axis=-1\n        )\n\n\nclass ConcatMerger(_BaseMerger):\n    @staticmethod\n    def _reduce(features):\n        # NxCxWxH -> NxCWH\n        return features.reshape(len(features), -1)",
+      "metadata": {
+        "file_path": "/home/sooraj/Downloads/embedding_and_chunking_result/code.py",
+        "repo": "embedding_and_chunking_result"
+      },
+      "score": 0.10072728991508484
+    },
+    {
+      "content": "\n\nclass Aggregator(torch.nn.Module):\n    def __init__(self, target_dim):\n        super(Aggregator, self).__init__()\n        self.target_dim = target_dim\n\n    def forward(self, features):\n        \"\"\"Returns reshaped and average pooled features.\"\"\"\n        # batchsize x number_of_layers x input_dim -> batchsize x target_dim\n        features = features.reshape(len(features), 1, -1)\n        features = F.adaptive_avg_pool1d(features, self.target_dim)\n        return features.reshape(len(features), -1)\n\n\nclass RescaleSegmentor:\n    def __init__(self, device, target_size=224):\n        self.device = device\n        self.target_size = target_size\n        self.smoothing = 4",
+      "metadata": {
+        "start_line": 170,
+        "end_line": 190,
+        "window_size": 20,
+        "slice_size": 2,
+        "repo": "embedding_and_chunking_result",
+        "file_path": "/home/sooraj/Downloads/embedding_and_chunking_result/code.py"
+      },
+      "score": 0.09582704305648804
+    },
+    {
+      "content": "        Args:\n            query_features: Features to retrieve.\n            index_features: [optional] Index features to search in.\n        \"\"\"\n        if index_features is None:\n            return self.search_index.search(query_features, n_nearest_neighbours)\n\n        # Build a search index just for this search.\n        search_index = self._create_index(index_features.shape[-1])\n        self._train(search_index, index_features)\n        search_index.add(index_features)\n        return search_index.search(query_features, n_nearest_neighbours)\n\n    def save(self, filename: str) -> None:\n        faiss.write_index(self._index_to_cpu(self.search_index), filename)\n\n    def load(self, filename: str) -> None:\n        self.search_index = self._index_to_gpu(faiss.read_index(filename))\n\n    def reset_index(self):\n        if self.search_index:\n            self.search_index.reset()\n            self.search_index = None\n\n\nclass ApproximateFaissNN(FaissNN):\n    def _train(self, index, features):\n        index.train(features)",
+      "metadata": {
+        "file_path": "/home/sooraj/Downloads/embedding_and_chunking_result/code.py",
+        "repo": "embedding_and_chunking_result"
+      },
+      "score": 0.08074355870485306
+    },
+    {
+      "content": "        \"\"\"Computes the feature dimensions for all layers given input_shape.\"\"\"\n        _input = torch.ones([1] + list(input_shape)).to(self.device)\n        _output = self(_input)\n        return [_output[layer].shape[1] for layer in self.layers_to_extract_from]\n\n\nclass ForwardHook:\n    def __init__(self, hook_dict, layer_name: str, last_layer_to_extract: str):\n        self.hook_dict = hook_dict\n        self.layer_name = layer_name\n        self.raise_exception_to_break = copy.deepcopy(\n            layer_name == last_layer_to_extract\n        )\n\n    def __call__(self, module, input, output):\n        self.hook_dict[self.layer_name] = output\n        if self.raise_exception_to_break:\n            raise LastLayerToExtractReachedException()\n        return None\n",
+      "metadata": {
+        "start_line": 270,
+        "end_line": 290,
+        "window_size": 20,
+        "slice_size": 2,
+        "repo": "embedding_and_chunking_result",
+        "file_path": "/home/sooraj/Downloads/embedding_and_chunking_result/code.py"
+      },
+      "score": 0.07035873830318451
+    }
+  ]
+}

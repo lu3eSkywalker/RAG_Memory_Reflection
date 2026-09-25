@@ -1,0 +1,231 @@
+# Modular RAG Pipeline Specification
+# Inspired by RepoCoder's iterative retrieval-generation architecture
+# Updated: FAISS vector store + Google Gemini (embedding + generation)
+
+pipeline:
+  name: "modular_rag"
+  version: "2.0"
+  description: "Composable RAG pipeline with FAISS vector store and Google Gemini"
+
+# === COMPONENT REGISTRY ===
+components:
+  # --- Chunkers (Document → Chunks) ---
+  chunkers:
+    - id: "sliding_window"
+      class: "rag_components.SlidingWindowChunker"
+      params:
+        window_size: 20
+        slice_size: 2
+        overlap: true
+    
+    - id: "fixed_size"
+      class: "rag_components.FixedSizeChunker"
+      params:
+        chunk_size: 512
+        overlap: 50
+    
+    - id: "semantic"
+      class: "rag_components.SemanticChunker"
+      params:
+        breakpoint_threshold: 0.8
+
+  # --- Embedders (Chunks → Vectors) ---
+  embedders:
+    - id: "sentence_transformer_embedder"
+      class: "rag_components.SentenceTransformerEmbedder"
+      params:
+        model: "sentence-transformers/all-MiniLM-L6-v2"
+        batch_size: 32
+        device: "cpu"
+
+  # --- Vector Stores (Embeddings → Index) ---
+  vector_stores:
+    - id: "faiss_store"
+      class: "rag_components.FAISSVectorStore"
+      params:
+        index_type: "flat_ip"  # Inner product (cosine with normalized vectors)
+        normalize: true
+
+  # --- Retrievers (Query + Index → Top-K Chunks) ---
+  retrievers:
+    - id: "cosine_similarity"
+      class: "rag_components.CosineSimilarityRetriever"
+      params:
+        top_k: 20
+        filter_future_context: true  # RepoCoder-style: exclude chunks after hole
+
+  # --- Prompt Builders (Query + Retrieved Chunks → Prompt) ---
+  prompt_builders:
+    - id: "repo_coder_style"
+      class: "rag_components.RepoCoderPromptBuilder"
+      params:
+        max_examples: 10
+        max_retrieval_tokens: 2000
+        include_file_paths: true
+        comment_out_code: true
+        extended_context_mode: false  # true for RG1, false for RepoCoder round 2
+    
+    - id: "standard_rag"
+      class: "rag_components.StandardRAGPromptBuilder"
+      params:
+        max_context_tokens: 3000
+        template: "default"
+    
+    - id: "cot_rag"
+      class: "rag_components.ChainOfThoughtPromptBuilder"
+      params:
+        max_context_tokens: 3000
+        include_reasoning: true
+
+  # --- Generators (Prompt → Completion) ---
+  generators:
+    - id: "gemini_generator"
+      class: "rag_components.GeminiGenerator"
+      params:
+        model: "gemini-1.5-pro"
+        temperature: 0.2
+        top_p: 0.95
+        max_tokens: 2048
+        api_key: ""  # Set via GEMINI_API_KEY env var
+
+  # --- Iteration Strategies (Multi-round RAG) ---
+  iteration_strategies:
+    - id: "single_pass"
+      class: "rag_components.SinglePassStrategy"
+      description: "Standard one-shot RAG"
+    
+    - id: "repocoder_iterative"
+      class: "rag_components.RepoCoderIterativeStrategy"
+      params:
+        num_rounds: 2
+        use_predictions_as_queries: true
+        prediction_aggregation: "first"  # or "majority_vote"
+    
+    - id: "self_refine"
+      class: "rag_components.SelfRefineStrategy"
+      params:
+        max_iterations: 3
+        critique_prompt: "critique_template"
+        refine_prompt: "refine_template"
+    
+    - id: "active_rag"
+      class: "rag_components.ActiveRAGStrategy"
+      params:
+        max_hops: 3
+        confidence_threshold: 0.7
+
+  # --- Evaluators (Prediction + Ground Truth → Metrics) ---
+  evaluators:
+    - id: "exact_match"
+      class: "rag_components.ExactMatchEvaluator"
+    
+    - id: "edit_similarity"
+      class: "rag_components.EditSimilarityEvaluator"
+    
+    - id: "pass_at_k"
+      class: "rag_components.PassAtKEvaluator"
+      params:
+        k_values: [1, 5, 10]
+        timeout: 5.0
+
+# === PIPELINE DEFINITIONS ===
+# Each pipeline composes components by ID
+pipelines:
+  # --- Standard RAG (baseline) ---
+  - id: "standard_rag"
+    name: "Standard RAG"
+    description: "Single-pass retrieve-then-generate with FAISS + SentenceTransformer"
+    steps:
+      - chunker: "sliding_window"
+      - embedder: "sentence_transformer_embedder"
+      - vector_store: "faiss_store"
+      - retriever: "cosine_similarity"
+      - prompt_builder: "standard_rag"
+      - generator: "gemini_generator"
+      - iteration: "single_pass"
+      - evaluator: ["exact_match", "edit_similarity"]
+
+  # --- RepoCoder RG1 (vanilla retrieval-augmented) ---
+  - id: "repocoder_rg1"
+    name: "RepoCoder RG1"
+    description: "Vanilla retrieval-augmented generation (round 1)"
+    steps:
+      - chunker: "sliding_window"
+      - embedder: "sentence_transformer_embedder"
+      - vector_store: "faiss_store"
+      - retriever: "cosine_similarity"
+      - prompt_builder: "repo_coder_style"
+        override:
+          extended_context_mode: true
+      - generator: "gemini_generator"
+      - iteration: "single_pass"
+      - evaluator: ["exact_match", "edit_similarity"]
+
+  # --- RepoCoder Full (iterative) ---
+  - id: "repocoder_full"
+    name: "RepoCoder Iterative"
+    description: "Two-round iterative retrieval-generation"
+    steps:
+      - chunker: "sliding_window"
+      - embedder: "sentence_transformer_embedder"
+      - vector_store: "faiss_store"
+      - retriever: "cosine_similarity"
+      - prompt_builder: "repo_coder_style"
+      - generator: "gemini_generator"
+      - iteration: "repocoder_iterative"
+      - evaluator: ["exact_match", "edit_similarity"]
+
+  # --- Hybrid Retrieval + Self-Refine ---
+  - id: "hybrid_self_refine"
+    name: "Self-Refine with SentenceTransformer"
+    description: "Iterative self-refinement with SentenceTransformer embeddings"
+    steps:
+      - chunker: "sliding_window"
+      - embedder: "sentence_transformer_embedder"
+      - vector_store: "faiss_store"
+      - retriever: "cosine_similarity"
+      - prompt_builder: "cot_rag"
+      - generator: "gemini_generator"
+      - iteration: "self_refine"
+      - evaluator: ["exact_match", "edit_similarity", "pass_at_k"]
+
+  # --- Active RAG (multi-hop) ---
+  - id: "active_rag"
+    name: "Active RAG"
+    description: "Multi-hop retrieval with confidence-based stopping"
+    steps:
+      - chunker: "sliding_window"
+      - embedder: "sentence_transformer_embedder"
+      - vector_store: "faiss_store"
+      - retriever: "cosine_similarity"
+      - prompt_builder: "cot_rag"
+      - generator: "gemini_generator"
+      - iteration: "active_rag"
+      - evaluator: ["pass_at_k"]
+
+# === EXECUTION CONFIG ===
+execution:
+  defaults:
+    cache_dir: "./cache"
+    parallel_workers: 8
+    batch_size: 32
+  
+  environments:
+    - name: "local"
+      device: "cuda"
+      generators: ["gemini_generator"]
+    
+    - name: "api"
+      generators: ["gemini_generator"]
+
+# === EXTENSION POINTS ===
+# Add new components without modifying core
+extensions:
+  custom_chunkers: "my_project.chunkers"
+  custom_embedders: "my_project.embedders"
+  custom_vector_stores: "my_project.vector_stores"
+  custom_retrievers: "my_project.retrievers"
+  custom_prompt_builders: "my_project.prompt_builders"
+  custom_generators: "my_project.generators"
+  custom_iteration_strategies: "my_project.iteration"
+  custom_evaluators: "my_project.evaluators"
