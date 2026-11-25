@@ -9,7 +9,10 @@ import re
 import pickle
 import json
 import os
+import shutil
+import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List, Dict, Optional
 import logging
 
@@ -176,10 +179,13 @@ class VectorMemoryStore(MemoryStore):
         self._embeddings.clear()
 
     # ---- Vector search ----
-    def search(self, query: str, top_k: int = 5, memory_type: Optional[str] = None) -> List[BaseMemory]:
+    def similarities(
+        self, query: str, memory_type: Optional[str] = None
+    ) -> List[tuple]:
         """
-        Cosine similarity search over stored embeddings.
-        Filters by memory_type if provided.
+        Cosine similarity for every stored memory, sorted best-first.
+        Returns [(similarity, memory), ...]. Used by search() and by callers
+        that need the score itself (e.g. reflection de-duplication).
         """
         if not self._memories:
             return []
@@ -191,9 +197,16 @@ class VectorMemoryStore(MemoryStore):
             vec = self._embeddings.get(mid)
             if vec is None:
                 continue
-            sim = self._cosine(qvec, vec)
-            scored.append((sim, mem))
+            scored.append((self._cosine(qvec, vec), mem))
         scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
+
+    def search(self, query: str, top_k: int = 5, memory_type: Optional[str] = None) -> List[BaseMemory]:
+        """
+        Cosine similarity search over stored embeddings.
+        Filters by memory_type if provided.
+        """
+        scored = self.similarities(query, memory_type=memory_type)
         result = [m for _, m in scored[:top_k]]
         logger.info(f"[Memory] Retrieved {len(result)} memories for query={query!r} type={memory_type} top_k={top_k}")
         return result
@@ -223,21 +236,71 @@ class VectorMemoryStore(MemoryStore):
 
     # ---- Persistence ----
     def save(self, path: str) -> None:
-        """Persist memories + embeddings via pickle."""
+        """Persist memories + embeddings via pickle (schema unchanged).
+
+        Writes to a temporary file and renames, so an interrupted write cannot
+        corrupt an existing store. Raises OSError with a clear message on
+        failure — callers log it, a failed write is never silent.
+        """
+        store_path = Path(path)
         data = {
             "memories": {mid: mem.to_dict() for mid, mem in self._memories.items()},
             "embeddings": self._embeddings,
             "dim": self._dim,
         }
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump(data, f)
-        logger.info(f"[Memory] Saved {len(self._memories)} memories to {path}")
+        temporary = store_path.with_name(store_path.name + ".tmp")
+        try:
+            store_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temporary, "wb") as f:
+                pickle.dump(data, f)
+            os.replace(temporary, store_path)
+        except Exception as error:
+            try:
+                if temporary.exists():
+                    temporary.unlink()
+            except OSError:  # pragma: no cover - filesystem dependent
+                pass
+            raise OSError(f"[Memory] Failed to save memory store to {store_path}: {error}") from error
+        logger.info(f"[Memory] Saved {len(self._memories)} memories to {store_path}")
 
     def load(self, path: str) -> None:
-        """Load persisted data."""
-        with open(path, "rb") as f:
-            data = pickle.load(f)
+        """Load persisted data.
+
+        Raises FileNotFoundError when the file is missing. A corrupt/unreadable
+        pickle is preserved (renamed to <name>.corrupt-<timestamp>) instead of
+        being silently overwritten, then the store starts empty.
+        """
+        store_path = Path(path)
+        if not store_path.is_file():
+            raise FileNotFoundError(f"Memory store not found: {store_path}")
+
+        try:
+            with open(store_path, "rb") as f:
+                data = pickle.load(f)
+        except Exception as error:
+            backup = store_path.with_name(
+                f"{store_path.name}.corrupt-{int(time.time())}"
+            )
+            try:
+                shutil.copy2(store_path, backup)
+                logger.error(
+                    "[Memory] Corrupt store %s (%s); original preserved at %s. "
+                    "Starting with an empty store.",
+                    store_path, error, backup,
+                )
+            except Exception as backup_error:  # pragma: no cover - filesystem dependent
+                logger.error(
+                    "[Memory] Corrupt store %s (%s) and backup failed (%s). "
+                    "Starting with an empty store; the file was left untouched.",
+                    store_path, error, backup_error,
+                )
+            self._memories = {}
+            self._embeddings = {}
+            return
+
+        if not isinstance(data, dict):
+            raise ValueError(f"Unexpected memory store payload in {store_path}")
+
         memories_raw: Dict[str, dict] = data.get("memories", {})
         embeddings: Dict[str, List[float]] = data.get("embeddings", {})
         self._memories = {}
@@ -248,7 +311,16 @@ class VectorMemoryStore(MemoryStore):
             except Exception as e:
                 logger.warning(f"[Memory] Failed to load memory {mid}: {e}")
         self._embeddings = embeddings
-        logger.info(f"[Memory] Loaded {len(self._memories)} memories from {path}")
+        logger.info(f"[Memory] Loaded {len(self._memories)} memories from {store_path}")
+
+    def load_if_exists(self, path: str) -> bool:
+        """Load when the file exists. Returns True when data was loaded."""
+        store_path = Path(path)
+        if not store_path.is_file():
+            logger.info(f"[Memory] No store file at {store_path}; starting empty")
+            return False
+        self.load(str(store_path))
+        return True
 
     # Alternative JSON persistence for debugging
     def save_json(self, path: str) -> None:
