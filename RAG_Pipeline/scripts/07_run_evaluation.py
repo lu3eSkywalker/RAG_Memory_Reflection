@@ -14,7 +14,7 @@ from rag_core.base import Evaluator, EvaluationResult
 from rag_core.context import PipelineContext
 from typing import List, Dict, Any
 
-GEMINI_API_KEY = "LLM_API_Key"
+import gemini_client
 
 
 class ExactMatchEvaluator(Evaluator):
@@ -86,39 +86,10 @@ def load_final_prompt(file_path: str) -> str:
 
 
 def call_gemini_api(prompt: str) -> str:
-    """Send prompt to Gemini API and return response."""
-    import requests
-    
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-    headers = {
-        "Content-Type": "application/json",
-    }
-    params = {
-        "key": GEMINI_API_KEY
-    }
-    
-    data = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 2048,
-        }
-    }
-    
+    """Send prompt to Gemini API and return response (key from GEMINI_API_KEY)."""
     try:
-        response = requests.post(url, headers=headers, params=params, json=data, timeout=60)
-        response.raise_for_status()
-        result = response.json()
-        
-        if "candidates" in result and len(result["candidates"]) > 0:
-            content = result["candidates"][0].get("content", {})
-            parts = content.get("parts", [])
-            if parts:
-                return parts[0].get("text", "")
-        
-        return "Error: No response from API"
+        return gemini_client.generate(prompt, model="gemini-1.5-flash",
+                                      temperature=0.1, max_tokens=2048)
     except Exception as e:
         return f"Error calling Gemini API: {e}"
 

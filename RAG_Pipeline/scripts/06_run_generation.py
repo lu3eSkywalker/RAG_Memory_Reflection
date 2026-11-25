@@ -7,14 +7,13 @@ Usage: python scripts/06_run_generation.py
 import sys
 import os
 import json
-import requests
 sys.path.insert(0, "/home/sooraj/Downloads/Mini_Project_RAG/RAG_Basic_Repocoder_Inspired_EXP_3")
 
 from rag_core.base import Generator, GenerationResult
 from rag_core.context import PipelineContext
 from typing import Dict, Any
 
-GEMINI_API_KEY = "LLM_API_Key"
+import gemini_client
 
 
 class MockGenerator(Generator):
@@ -48,47 +47,21 @@ class GeminiGenerator(Generator):
     
     def __init__(self, component_id: str, config: Dict[str, Any]):
         super().__init__(component_id, config)
-        self.api_key = self.config.get("api_key") or GEMINI_API_KEY
+        self.api_key = self.config.get("api_key") or os.environ.get("GEMINI_API_KEY")
         self.model_name = self.config.get("model", "gemini-2.5-flash")
         self.temperature = self.config.get("temperature", 0.2)
         self.top_p = self.config.get("top_p", 0.95)
         self.max_tokens = self.config.get("max_tokens", 2048)
-    
+
     def generate(self, prompt: str, context: PipelineContext) -> GenerationResult:
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-        headers = {
-            "Content-Type": "application/json",
-        }
-        params = {
-            "key": self.api_key
-        }
-        
-        data = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "temperature": self.temperature,
-                "topP": self.top_p,
-                "maxOutputTokens": self.max_tokens,
-            }
-        }
-        
         try:
-            response = requests.post(url, headers=headers, params=params, json=data, timeout=60)
-            response.raise_for_status()
-            result = response.json()
-            
-            if "candidates" in result and len(result["candidates"]) > 0:
-                content = result["candidates"][0].get("content", {})
-                parts = content.get("parts", [])
-                if parts:
-                    completion = parts[0].get("text", "")
-                else:
-                    completion = ""
-            else:
-                completion = ""
-                
+            completion = gemini_client.generate(
+                prompt,
+                model=self.model_name,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                max_tokens=self.max_tokens,
+            )
         except Exception as e:
             print(f"Gemini generation failed: {e}")
             completion = "# Generation failed\n    pass\n"
@@ -126,12 +99,14 @@ def main():
     print(f"Prompt length: {len(prompt)} chars")
     
     print("Initializing generator...")
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("Error: GEMINI_API_KEY is not set. Export it before running this script.")
+        return
     generator = GeminiGenerator("gemini_generator", {
         "model": "gemini-2.5-flash",
         "temperature": 0.2,
         "top_p": 0.95,
         "max_tokens": 2048,
-        "api_key": GEMINI_API_KEY
     })
     
     context = PipelineContext()
